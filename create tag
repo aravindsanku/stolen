@@ -1,0 +1,304 @@
+cd `dirname $0`
+cd ..
+
+. ./ab_project_setup.ksh .
+
+　
+## Script Variables ##
+v_DATE_TM=`date +%Y%m%d%H%M%S`
+v_DATE=`date +%d-%h-%Y`
+v_USER=$(whoami)
+v_PROJECT_PUB_DIR=/Projects/wellsfargo/ccp
+v_PROJECT_INPUT_DIR=/Projects/wellsfargo/ccp/ccp_input
+ALL_TAG_DETAIL_CSV_FILE=${CCP_PUB_SERIAL_TEMP}/CoRS_DIDQ_TAG_DETAILS.csv
+chmod 777 ${ALL_TAG_DETAIL_CSV_FILE} 2>/dev/null
+
+## Mail List CC & TO ##
+MAIL_LIST_CC='Balaji.Appajiraman@wellsfargo.com,Mark.Horn@wellsfargo.com,Purshartha.C.Srivastava@wellsfargo.com'
+MAIL_LIST_TO='Pratyush.Srivastava@wellsfargo.com,Aravind.Sanku@wellsfargo.com,Bhaskar.Pandey2@wellsfargo.com'
+
+if [[ ! -s ${ALL_TAG_DETAIL_CSV_FILE} ]]; then
+        echo "Date,User ID,Sandbox,EME Path,Branch,Tag Name,Comment" > ${ALL_TAG_DETAIL_CSV_FILE}
+fi
+
+　
+## Script Log File ##
+v_SCRIPT_NAME=`basename $0 .ksh`
+v_LOG_FILE=${CCP_PUB_SERIAL_LOG}/${v_SCRIPT_NAME}.${v_USER}_${v_DATE_TM}.log
+
+## Logging function ##
+FN_LOG_D() {
+	printf "`date`: ${1}"
+	printf "`date`: ${1}" >> ${v_LOG_FILE}
+}
+
+FN_LOG() {
+	printf "${1}"
+	printf "${1}" >> ${v_LOG_FILE}
+}
+
+　
+## Get Mail ID function ##
+FN_GET_MAIL_ID() {
+        FN_LOG "Please enter your mail id. eg. abc@wellsfargo.com\n"
+        FN_LOG "MAIL_ID: "
+        read MAIL_ID
+        printf "${MAIL_ID}\n" >> ${v_LOG_FILE}
+        FN_LOG "\n"
+        echo "${v_USER},${MAIL_ID}" >> ${MAIL_ID_FILE}
+}
+
+　
+## Remove temp files function ##
+FN_RM_TMP_FILES() {
+        rm -f ${CCP_PUB_SERIAL_LOG}/${v_SCRIPT_NAME}.${v_USER}*.project_dir_listing.temp 2>/dev/null
+        rm -f ${CCP_PUB_SERIAL_LOG}/${v_SCRIPT_NAME}.${v_USER}*.tag_listing*.temp 2>/dev/null
+        rm -f ${CCP_PUB_SERIAL_LOG}/${v_SCRIPT_NAME}.${v_USER}*.tag_diff.temp 2>/dev/null
+}
+
+## BRE Change Summary ##
+FN_BRE_DIFF() {
+        RSET_DIFF_FILE_VEC=""
+        DQE_DIFF_FILE_VEC=""
+        for RSET_RPATH in `grep ruleset.rset ${TAG_PROJECT_DIFF_FILE} | grep ^M | awk '{print $2}'`
+        do
+                RSET_NAME=`dirname ${RSET_RPATH} | awk -F "/" '{print $NF}'`
+                RSET_DIFF_FILE=${CCP_PUB_SERIAL_TEMP}/${NEW_PROJECT_TAG}.${RSET_NAME}.rset_diff.html
+                air -branch ${PROJECT_BRANCH} object versions ${RSET_RPATH} -quiet > ${v_LOG_FILE}.rset_tag_listing_${RSET_NAME}.temp
+                VER_1=`grep -w ${PREV_PROJECT_TAG} ${v_LOG_FILE}.rset_tag_listing_${RSET_NAME}.temp | awk '{print $1}'`
+                VER_2=`grep -w ${NEW_PROJECT_TAG} ${v_LOG_FILE}.rset_tag_listing_${RSET_NAME}.temp | awk '{print $1}'`
+                bre_change_summary -a ${v_APPID} -branch ${PROJECT_BRANCH} -rpath ${RSET_RPATH} -o ${RSET_DIFF_FILE} -ver1 ${VER_1} -ver2 ${VER_2}
+                if [[ `ls -l ${RSET_DIFF_FILE} | awk '{print $5}'` -gt 2500000 ]]; then
+                        gzip ${RSET_DIFF_FILE}
+                        RSET_DIFF_FILE="${RSET_DIFF_FILE}.gz"
+                fi
+                RSET_DIFF_FILE_VEC="${RSET_DIFF_FILE_VEC} -a ${RSET_DIFF_FILE}"
+                rm -f ${v_LOG_FILE}.rset_tag_listing_${RSET_NAME}.temp 2>/dev/null
+
+        done
+
+        ## DQE Change Summary ##
+        for DQE_RPATH in `grep \.appconf ${TAG_PROJECT_DIFF_FILE} | grep ^M | awk '{print $2}'`
+        do
+                DQE_NAME=`basename ${DQE_RPATH} .appconf`
+                DQE_DIFF_FILE=${CCP_PUB_SERIAL_TEMP}/${NEW_PROJECT_TAG}.${DQE_NAME}.DQE_diff.html
+                air -branch ${PROJECT_BRANCH} object versions ${DQE_RPATH} -quiet > ${v_LOG_FILE}.dqe_tag_listing_${DQE_NAME}.temp
+                VER_1=`grep -w ${PREV_PROJECT_TAG} ${v_LOG_FILE}.dqe_tag_listing_${DQE_NAME}.temp | awk '{print $1}'`
+                VER_2=`grep -w ${NEW_PROJECT_TAG} ${v_LOG_FILE}.dqe_tag_listing_${DQE_NAME}.temp | awk '{print $1}'`
+                bre_change_summary -a ${v_APPID} -branch ${PROJECT_BRANCH} -rpath ${DQE_RPATH} -ruleset-ref vars.validation_ruleset -o ${DQE_DIFF_FILE} -ver1 ${VER_1} -ver2 ${VER_2}
+                if [[ `ls -l ${DQE_DIFF_FILE} | awk '{print $5}'` -gt 2500000 ]]; then
+                        gzip ${DQE_DIFF_FILE}
+                        DQE_DIFF_FILE="${DQE_DIFF_FILE}.gz"
+                fi
+                DQE_DIFF_FILE_VEC="${DQE_DIFF_FILE_VEC} -a ${DQE_DIFF_FILE}"
+                rm -f ${v_LOG_FILE}.dqe_tag_listing_${DQE_NAME}.temp 2>/dev/null
+        done
+
+        if [[ -n ${RSET_DIFF_FILE_VEC} || -n ${DQE_DIFF_FILE_VEC} ]]; then
+                printf "Hi All,\n\nPlease find attached the BRE/DQE Change Summary for the modified ruleset's from the below new tag.\nKindly verify the changes.\n\nNew Tag: ${NEW_PROJECT_TAG}\nPrev Tag: ${PREV_PROJECT_TAG} (Tag used for diff)\n\nThanks\nCoRS DIDQ ETL Team" | mailx -s "[CoRS DIDQ Tag Creation] - Project: ${PROJECT_NM_LOWER}, Branch: ${PROJECT_BRANCH} | BRE/DQE Change Summary" ${RSET_DIFF_FILE_VEC} ${DQE_DIFF_FILE_VEC} -c ${MAIL_LIST_CC} ${MAIL_LIST}
+
+        fi
+}
+
+　
+FN_CREATE_TAG_NEW() {
+        PROJECT_NM_NEW=`echo ${PROJECT_NM} | tr -d " "`
+        for PROJECT_NM_NEW1 in $(echo ${PROJECT_NM_NEW} | sed "s/,/ /g")
+        do
+                PROJECT_NM_LOWER=`echo ${PROJECT_NM_NEW1} | tr [A-Z] [a-z]`
+                PROJECT_NM_PUB=`echo ${PROJECT_NM_LOWER} | rev | cut -c 1-4` 
+                if [[ ${PROJECT_NM_PUB} == "bup_" ]]; then
+                        PROJECT_EME_BASE_DIR=${v_PROJECT_PUB_DIR}
+                        PROJECT_EME_DIR=${v_PROJECT_PUB_DIR}/${PROJECT_NM_LOWER}
+                else
+                        PROJECT_EME_BASE_DIR=${v_PROJECT_INPUT_DIR}
+                        PROJECT_EME_DIR=${v_PROJECT_INPUT_DIR}/${PROJECT_NM_LOWER}
+                fi
+        
+                ## Verify Project ##
+                air -branch ${PROJECT_BRANCH} ls ${PROJECT_EME_BASE_DIR} > ${v_LOG_FILE}.project_dir_listing.temp
+                if [[ `grep -w ${PROJECT_NM_LOWER} ${v_LOG_FILE}.project_dir_listing.temp | awk '{print $1}'` == "project:" ]]; then
+                        FN_LOG_D "Branch: ${PROJECT_BRANCH}; The EME Project Directory for ${PROJECT_NM_LOWER} is ${PROJECT_EME_DIR} .\n\n"
+                else
+                        FN_LOG_D "Branch: ${PROJECT_BRANCH}; The EME Project Directory for ${PROJECT_NM_LOWER} does not exists, Please provide the correct project name.\n\n"
+                        exit 3
+                fi
+        
+                TAG_DETAIL_CSV_FILE=${CCP_PUB_SERIAL_TEMP}/${v_USER}.CoRS_DIDQ_TAG_DETAILS.csv
+                echo "Date,User ID,Sandbox,EME Path,Branch,Tag Name,Comment" > ${TAG_DETAIL_CSV_FILE}
+
+                ## Get Prev Project Tag(frozen tags) ##
+                air -branch ${PROJECT_BRANCH} tag ls -l -o ${PROJECT_EME_DIR} > ${v_LOG_FILE}.tag_listing_all.temp
+                cat ${v_LOG_FILE}.tag_listing_all.temp | awk '{print $6}' > ${v_LOG_FILE}.tag_listing.temp
+                if [[ ${PROJECT_BRANCH} == "main" ]]; then
+                        cat ${v_LOG_FILE}.tag_listing_all.temp | grep "(frozen)" | awk '{print $6}' > ${v_LOG_FILE}.tag_listing_frozen.temp
+                        PREV_PROJECT_TAG=`cat ${v_LOG_FILE}.tag_listing_frozen.temp | tail -1`
+                        v_APPID=CcpAceDev
+                else
+                        v_APPID=${PROJECT_BRANCH}
+                        cp ${v_LOG_FILE}.tag_listing_all.temp ${v_LOG_FILE}.tag_listing_all_1.temp
+                        while read i
+                        do
+                                line=`tail -1 ${v_LOG_FILE}.tag_listing_all_1.temp`
+                                if [[ `echo $line | awk '{print $1}'` == "tlksecdm" ]]; then
+                                        PREV_PROJECT_TAG=`echo $line | awk '{print $6}'`
+                                        break
+                                fi
+                                sed -i '$d' ${v_LOG_FILE}.tag_listing_all_1.temp
+                        done < ${v_LOG_FILE}.tag_listing_all.temp
+                fi
+                FN_LOG_D "PREV_PROJECT_TAG: ${PREV_PROJECT_TAG}\n"
+
+                ## New Project Tag ##
+                TAG_DATE=`date +%Y_%m_%d`
+                TAG_COUNT=`grep ${TAG_DATE} ${v_LOG_FILE}.tag_listing.temp | wc -l`
+                TAG_COUNT_NEW=`expr ${TAG_COUNT} + 1`
+                if [[ ${TAG_COUNT} -le 9 ]]; then
+                        TAG_VERSION_COUNT=`echo v0${TAG_COUNT_NEW}`
+                else
+                        TAG_VERSION_COUNT=`echo v${TAG_COUNT_NEW}`
+                fi
+                NEW_PROJECT_TAG=${PROJECT_BRANCH}_${PROJECT_NM_LOWER}_${TAG_DATE}_${TAG_VERSION_COUNT}_${SPRINT_NUM}
+                FN_LOG_D "NEW_PROJECT_TAG: ${NEW_PROJECT_TAG}\n\n"
+        
+                ## Read Tag Comment ##
+                FN_LOG "Please enter the comment to be associated with the tag. eg. CNG-xxxxx\n"
+                FN_LOG "TAG_COMMENT: "
+                read COMMENT
+                printf "${COMMENT}\n" >> ${v_LOG_FILE}
+                FN_LOG "\n"
+                TAG_COMMENT=`echo "${v_USER}(TAG_COMMENT): ${COMMENT}"`
+        
+                ## Tag Creation ##
+                FN_LOG_D "Branch: ${PROJECT_BRANCH}; The tag creation for ${PROJECT_NM_LOWER} has started, please wait.\n"
+                air -branch ${PROJECT_BRANCH} tag create -exact ${NEW_PROJECT_TAG} ${PROJECT_EME_DIR} -comment "${TAG_COMMENT}"
+        
+                ## Tag Verification ##
+                air -branch ${PROJECT_BRANCH} tag ls ${NEW_PROJECT_TAG} >> /dev/null
+                TAG_RESULT=$?
+                if [[ ${TAG_RESULT} -ne 0 ]]; then
+                        FN_LOG_D "Branch: ${PROJECT_BRANCH}; The tag creation failed for ${PROJECT_NM_LOWER}. This tag ${NEW_PROJECT_TAG} does not exist. Please check.\n\n"
+                        #exit 4
+                else
+                        FN_LOG_D "Branch: ${PROJECT_BRANCH}; The tag ${NEW_PROJECT_TAG} has been successfully created.\n\n"
+                fi
+        
+                ## Diff with the previous tag ##
+                TAG_PROJECT_DIFF_FILE=${CCP_PUB_SERIAL_TEMP}/${NEW_PROJECT_TAG}.CoRS_DIDQ_TAG_PROJECT_DIFF.txt
+                TAG_OBJECT_DIFF_FILE=${CCP_PUB_SERIAL_TEMP}/${NEW_PROJECT_TAG}.CoRS_DIDQ_TAG_OBJECT_DIFF.txt
+                FN_LOG_D "Branch: ${PROJECT_BRANCH}; The project & object level tag diff for ${PROJECT_NM_LOWER} has started, please wait.\n"
+                air -branch ${PROJECT_BRANCH} object changed ${PROJECT_EME_DIR} -version1 ${PREV_PROJECT_TAG} -version2 ${NEW_PROJECT_TAG} -diff > ${TAG_OBJECT_DIFF_FILE}
+                cat ${TAG_OBJECT_DIFF_FILE} | grep -xE '^[ARMSUN][[:blank:]].*' > ${TAG_PROJECT_DIFF_FILE}
+                FN_LOG_D "Branch: ${PROJECT_BRANCH}; The project & object level tag diff for ${PROJECT_NM_LOWER} has completed successfully.\n\n"
+
+                ## BRE Change Summary ##
+                FN_LOG_D "Branch: ${PROJECT_BRANCH}; The BRE/DQE Change Summary for ${PROJECT_NM_LOWER} if any changes to rulesets/appconf will be sent in a separate email.\n\n"
+                FN_BRE_DIFF &
+        
+                ## Tag Details ##
+                echo "${v_DATE},${v_USER},${PROJECT_NM_LOWER},${PROJECT_EME_DIR},${PROJECT_BRANCH},${NEW_PROJECT_TAG},${TAG_COMMENT}" >> ${TAG_DETAIL_CSV_FILE}
+        
+                ## All Tag Details ##
+                echo "${v_DATE},${v_USER},${PROJECT_NM_LOWER},${PROJECT_EME_DIR},${PROJECT_BRANCH},${NEW_PROJECT_TAG},${TAG_COMMENT}" >> ${ALL_TAG_DETAIL_CSV_FILE}
+
+                if [[ `ls -l ${TAG_OBJECT_DIFF_FILE} | awk '{print $5}'` -gt 9500000 ]]; then
+                        gzip ${TAG_OBJECT_DIFF_FILE}
+                        TAG_OBJECT_DIFF_FILE="${TAG_OBJECT_DIFF_FILE}.gz"
+                fi
+                FN_SEND_MAIL
+        done
+}
+
+## Create TAG ##
+FN_CREATE_TAG() {
+        ## Read Project Name ##
+        FN_LOG "Please enter the project name. eg. ccp_pub\n"
+        FN_LOG "If tags need to be created for mutiple project, Please enter the project name with comma delimited. eg. ccp_pub,ccp_input_pub\n"
+        FN_LOG "PROJECT_NAME: "
+        read PROJECT_NM
+        printf "${PROJECT_NM}\n" >> ${v_LOG_FILE}
+        FN_LOG "\n"
+
+　
+        ## Read Project Branch ##
+        FN_LOG "Please enter the branch name. eg. main\n"
+        FN_LOG "PROJECT_BRANCH: "
+        read PROJECT_BRANCH
+        printf "${PROJECT_BRANCH}\n" >> ${v_LOG_FILE}
+        FN_LOG "\n"
+
+        ## Verify Branch ##
+        if [[ `air branch ls | awk '{print $1}' | grep -w ${PROJECT_BRANCH}` != "${PROJECT_BRANCH}" ]]; then
+                FN_LOG_D "The branch ${PROJECT_BRANCH} does not exists, Please provide the correct branch name.\n\n"
+                exit 2
+        else
+                ## Read Sprint Number ##
+                FN_LOG "Please enter the sprint number. eg. sp17 or sp17_test\n"
+                FN_LOG "SPRINT_NUMBER: "
+                read SPRINT_NUM
+                printf "${SPRINT_NUM}\n" >> ${v_LOG_FILE}
+                FN_LOG "\n"
+                
+                FN_CREATE_TAG_NEW
+        fi
+
+}
+
+　
+## Check Mail function ##
+FN_CHK_MAIL() {
+        ## Mail List ##
+        MAIL_ID_FILE=${CCP_PUB_SERIAL_TEMP}/ccp_create_tag_mail_id_list.txt
+        touch ${MAIL_ID_FILE}
+        chmod 777 ${MAIL_ID_FILE} 2>/dev/null
+        if [[ `grep ${v_USER} ${MAIL_ID_FILE} 2>/dev/null | cut -d "," -f1` == "${v_USER}" ]]; then
+                MAIL_LIST_TEST=`grep ${v_USER} ${MAIL_ID_FILE} 2>/dev/null | cut -d "," -f2`
+                if [[ -z ${MAIL_LIST_TEST} ]]; then
+                        sed -i "/${v_USER}/d" ${MAIL_ID_FILE}
+                        FN_GET_MAIL_ID
+                        MAIL_LIST=${MAIL_ID}
+                else
+                        MAIL_LIST=${MAIL_LIST_TEST}
+                        ## Verify Mail ID ##
+                        FN_LOG "Please verify if the Mail ID(${MAIL_LIST}) is correct. Enter 'Y' to proceed or 'N' to enter your New Mail ID.\n"
+                        FN_LOG "VERIFY_MAIL_ID: "
+                        read VERIFY_MAIL_ID
+                        printf "${VERIFY_MAIL_ID}\n" >> ${v_LOG_FILE}
+                        FN_LOG "\n"
+        
+                        if [[ ${VERIFY_MAIL_ID} == "N" || ${VERIFY_MAIL_ID} == "n" ]]; then
+                                sed -i "/${v_USER}/d" ${MAIL_ID_FILE}
+                                FN_GET_MAIL_ID
+                                MAIL_LIST=${MAIL_ID}
+                        fi
+                fi
+        else
+                FN_GET_MAIL_ID
+                MAIL_LIST=${MAIL_ID}
+        fi
+
+        MAIL_LIST=`echo "${MAIL_LIST},${MAIL_LIST_TO}"`
+}
+
+## Send Mail function ##
+FN_SEND_MAIL() {
+        printf "Hi All,\n\nPlease find attached the tag details and the project & object level diffs.\nKindly verify the objects & changes.\n\nNew Tag: ${NEW_PROJECT_TAG}\nPrev Tag: ${PREV_PROJECT_TAG} (Tag used for diff)\n\nThanks\nCoRS DIDQ ETL Team" | mailx -s "[CoRS DIDQ Tag Creation] - Project: ${PROJECT_NM_LOWER}, Branch: ${PROJECT_BRANCH}" -a ${TAG_DETAIL_CSV_FILE} -a ${TAG_PROJECT_DIFF_FILE} -a ${TAG_OBJECT_DIFF_FILE} -c ${MAIL_LIST_CC} ${MAIL_LIST}
+}
+
+## Main ##
+FN_LOG_D "+++++ Script Started +++++\n\n"
+
+## Checking for the BATCH ID ##
+if [[ ${v_USER} == ccpetl1 || ${v_USER} == ccpetl2 || ${v_USER} == ccpetl3 || ${v_USER} == ccpetl4 || ${v_USER} == ccpmaint || ${v_USER} == ccpetlap ]]; then
+        FN_LOG_D "Kindly run this script from developer's id.\n\n"
+        exit 1
+else
+        FN_CHK_MAIL
+        FN_CREATE_TAG
+fi
+
+## All Tags Mail ##
+printf "Hi All,\n\nPlease find all the tag details till date.\n\nThanks\nCoRS DIDQ ETL Team" | mailx -s "[CoRS DIDQ Tag Creation] - All Tags" -a ${ALL_TAG_DETAIL_CSV_FILE} ${MAIL_LIST_CC}
+
+FN_RM_TMP_FILES
+FN_LOG_D "+++++ Script Ended +++++\n\n"
